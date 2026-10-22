@@ -106,6 +106,13 @@ class Connection implements ConnectionInterface
     protected $reconnector;
 
     /**
+     * Indicates if the connection is reconnecting after a lost connection.
+     *
+     * @var bool
+     */
+    protected $reconnecting = false;
+
+    /**
      * The query grammar implementation.
      *
      * @var \Illuminate\Database\Query\Grammars\Grammar
@@ -716,7 +723,7 @@ class Connection implements ConnectionInterface
     /**
      * Execute the given callback in "dry run" mode.
      *
-     * @param  (\Closure(): array{query: string, bindings: array, time: float|null}[])  $callback
+     * @param  (\Closure(): (array{query: string, bindings: array, time: float|null}[]))  $callback
      * @return array{query: string, bindings: array, time: float|null}[]
      */
     protected function withFreshQueryLog($callback)
@@ -733,11 +740,11 @@ class Connection implements ConnectionInterface
         // Now we'll execute this callback and capture the result. Once it has been
         // executed we will restore the value of query logging and give back the
         // value of the callback so the original callers can have the results.
-        $result = $callback();
-
-        $this->loggingQueries = $loggingQueries;
-
-        return $result;
+        try {
+            return $callback();
+        } finally {
+            $this->loggingQueries = $loggingQueries;
+        }
     }
 
     /**
@@ -861,6 +868,7 @@ class Connection implements ConnectionInterface
                 $e,
                 $this->getConnectionDetails(),
                 $this->latestReadWriteTypeUsed(),
+                (bool) $this->getConfig('mask_bindings_in_exception_messages'),
             );
 
             if ($isUniqueConstraintError) {
@@ -1031,8 +1039,15 @@ class Connection implements ConnectionInterface
      */
     protected function tryAgainIfCausedByLostConnection(QueryException $e, $query, $bindings, Closure $callback)
     {
-        if ($this->causedByLostConnection($e->getPrevious())) {
-            $this->reconnect();
+        // Queries run while reconnecting (e.g. from ConnectionEstablished listeners) must not reconnect again...
+        if (! $this->reconnecting && $this->causedByLostConnection($e->getPrevious())) {
+            $this->reconnecting = true;
+
+            try {
+                $this->reconnect();
+            } finally {
+                $this->reconnecting = false;
+            }
 
             return $this->runQueryCallback($query, $bindings, $callback);
         }
@@ -1077,7 +1092,7 @@ class Connection implements ConnectionInterface
     {
         $this->transactionsManager?->rollback($this->getName(), 0);
 
-        $this->setPdo(null)->setReadPdo(null)->setDirectPdo(null);
+        @$this->setPdo(null)->setReadPdo(null)->setDirectPdo(null);
     }
 
     /**
@@ -1478,7 +1493,11 @@ class Connection implements ConnectionInterface
      */
     public function getName()
     {
-        return $this->getConfig('name');
+        $name = $this->getConfig('name');
+
+        return $this->readWriteType === 'direct' && $name
+            ? $name.'::direct'
+            : $name;
     }
 
     /**
@@ -1488,7 +1507,7 @@ class Connection implements ConnectionInterface
      */
     public function getNameWithReadWriteType()
     {
-        $name = $this->getName().($this->readWriteType ? '::'.$this->readWriteType : '');
+        $name = $this->getConfig('name').($this->readWriteType ? '::'.$this->readWriteType : '');
 
         return empty($name) ? null : $name;
     }

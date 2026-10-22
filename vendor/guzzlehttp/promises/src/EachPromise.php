@@ -8,41 +8,34 @@ namespace GuzzleHttp\Promise;
  * Represents a promise that iterates over many promises and invokes
  * side-effect functions in the process.
  *
- * @template TKey of array-key
- * @template TValue
- * @template TReason
- *
- * @implements PromisorInterface<mixed, mixed>
- *
  * @final
  */
 class EachPromise implements PromisorInterface
 {
-    use NonSerializableTrait;
+    private $pending = [];
 
-    /** @var array<int, PromiseInterface<mixed, mixed>>|null */
-    private ?array $pending = [];
+    private $nextPendingIndex = 0;
 
-    private int $nextPendingIndex = 0;
+    /** @var \Iterator|null */
+    private $iterable;
 
-    /** @var \Iterator<TKey, TValue|PromiseInterface<TValue, TReason>>|null */
-    private ?\Iterator $iterable;
-
-    /** @var (callable(int): int)|int|null */
+    /** @var callable|int|null */
     private $concurrency;
 
-    /** @var (callable(TValue, TKey, PromiseInterface<mixed, mixed>): mixed)|null */
+    /** @var callable|null */
     private $onFulfilled;
 
-    /** @var (callable(TReason, TKey, PromiseInterface<mixed, mixed>): mixed)|null */
+    /** @var callable|null */
     private $onRejected;
 
-    /** @var Promise<mixed, mixed>|null */
-    private ?Promise $aggregate = null;
+    /** @var Promise|null */
+    private $aggregate;
 
-    private ?bool $mutex = null;
+    /** @var bool|null */
+    private $mutex;
 
-    private bool $stepWhileLocked = false;
+    /** @var bool */
+    private $stepWhileLocked = false;
 
     /**
      * Configuration hash can include the following key value pairs:
@@ -62,15 +55,23 @@ class EachPromise implements PromisorInterface
      *   allowed number of outstanding concurrently executing promises,
      *   creating a capped pool of promises. There is no limit by default.
      *
-     * @param iterable<TKey, TValue|PromiseInterface<TValue, TReason>> $iterable Promises or values to iterate.
-     * @param array{
-     *     fulfilled?: callable(TValue, TKey, PromiseInterface<mixed, mixed>): mixed,
-     *     rejected?: callable(TReason, TKey, PromiseInterface<mixed, mixed>): mixed,
-     *     concurrency?: int|(callable(int): int)
-     * } $config Configuration options
+     * @param mixed $iterable Promises or values to iterate.
+     * @param array $config   Configuration options
      */
-    public function __construct(iterable $iterable, array $config = [])
+    public function __construct($iterable, array $config = [])
     {
+        if (!is_iterable($iterable)) {
+            \trigger_deprecation(
+                'guzzlehttp/promises',
+                '2.5',
+                'Passing a non-iterable to %s::%s() is deprecated; guzzlehttp/promises 3.0 will require an iterable.',
+                __CLASS__,
+                __FUNCTION__
+            );
+
+            $iterable = [$iterable];
+        }
+
         $this->iterable = Create::iterFor($iterable);
 
         if (isset($config['concurrency'])) {
@@ -86,9 +87,7 @@ class EachPromise implements PromisorInterface
         }
     }
 
-    /**
-     * @return PromiseInterface<mixed, mixed>
-     */
+    /** @psalm-suppress InvalidNullableReturnType */
     public function promise(): PromiseInterface
     {
         if ($this->aggregate) {
@@ -97,11 +96,12 @@ class EachPromise implements PromisorInterface
 
         try {
             $this->createPromise();
+            /** @psalm-assert Promise $this->aggregate */
             $this->iterable->rewind();
             $this->refillPending();
             if (!$this->pending) {
                 Utils::queue()->add(function (): void {
-                    if (!$this->aggregate || Is::settled($this->aggregate)) {
+                    if (!$this->aggregate || State::isSettled($this->aggregate)) {
                         return;
                     }
 
@@ -116,6 +116,9 @@ class EachPromise implements PromisorInterface
             $this->aggregate->reject($e);
         }
 
+        /**
+         * @psalm-suppress NullableReturnStatement
+         */
         return $this->aggregate;
     }
 
@@ -133,13 +136,13 @@ class EachPromise implements PromisorInterface
                 while ($promise = current($this->pending)) {
                     next($this->pending);
                     $promise->wait();
-                    if (Is::settled($this->aggregate)) {
+                    if (State::isSettled($this->aggregate)) {
                         return;
                     }
                 }
                 // Refill and re-sweep; give up only when nothing remains.
                 $this->refillPending();
-                if (Is::settled($this->aggregate) || !$this->pending) {
+                if (State::isSettled($this->aggregate) || !$this->pending) {
                     return;
                 }
             }
@@ -170,7 +173,7 @@ class EachPromise implements PromisorInterface
             ? ($this->concurrency)(count($this->pending))
             : $this->concurrency;
         // The callable can settle the aggregate; admit nothing more.
-        if (Is::settled($this->aggregate)) {
+        if (State::isSettled($this->aggregate)) {
             return;
         }
         $concurrency = max($concurrency - count($this->pending), 0);
@@ -254,7 +257,7 @@ class EachPromise implements PromisorInterface
         // Run the completion check that locked steps skipped.
         if ($this->stepWhileLocked) {
             $this->stepWhileLocked = false;
-            if (!Is::settled($this->aggregate)) {
+            if (!State::isSettled($this->aggregate)) {
                 $this->checkIfFinished();
             }
         }
@@ -265,7 +268,7 @@ class EachPromise implements PromisorInterface
     private function step(int $idx): void
     {
         // If the promise was already resolved, then ignore this step.
-        if (Is::settled($this->aggregate)) {
+        if (State::isSettled($this->aggregate)) {
             return;
         }
 

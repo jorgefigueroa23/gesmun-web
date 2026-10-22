@@ -121,7 +121,7 @@ class Arr
         $results = [];
 
         foreach ($array as $values) {
-            if ($values instanceof Collection) {
+            if ($values instanceof Enumerable) {
                 $results[] = $values->all();
             } elseif (is_array($values)) {
                 $results[] = $values;
@@ -308,6 +308,16 @@ class Arr
             return value($default);
         }
 
+        if ($array instanceof Traversable) {
+            foreach ($array as $key => $value) {
+                if ($callback($value, $key)) {
+                    return $value;
+                }
+            }
+
+            return value($default);
+        }
+
         $array = static::from($array);
 
         $key = array_find_key($array, $callback);
@@ -370,7 +380,7 @@ class Arr
         $result = [];
 
         foreach ($array as $item) {
-            $item = $item instanceof Collection ? $item->all() : $item;
+            $item = $item instanceof Enumerable ? $item->all() : $item;
 
             if (! is_array($item)) {
                 $result[] = $item;

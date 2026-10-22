@@ -527,7 +527,9 @@ class Container implements ArrayAccess, ContainerContract
      */
     public function scoped($abstract, $concrete = null)
     {
-        $this->scopedInstances[] = $abstract;
+        if (! in_array($abstract, $this->scopedInstances, true)) {
+            $this->scopedInstances[] = $abstract;
+        }
 
         $this->singleton($abstract, $concrete);
     }
@@ -1074,6 +1076,10 @@ class Container implements ArrayAccess, ContainerContract
      */
     protected function getContextualConcrete($abstract)
     {
+        if ($this->contextual === []) {
+            return null;
+        }
+
         if (! is_null($binding = $this->findInContextualBindings($abstract))) {
             return $binding;
         }
@@ -1132,7 +1138,7 @@ class Container implements ArrayAccess, ContainerContract
         // hand back the results of the functions, which allows functions to be
         // used as resolvers for more fine-tuned resolution of these objects.
         if ($concrete instanceof Closure) {
-            $this->buildStack[] = spl_object_hash($concrete);
+            $this->buildStack[] = spl_object_id($concrete);
 
             try {
                 return $concrete($this, $this->getLastParameterOverride());
@@ -1213,9 +1219,11 @@ class Container implements ArrayAccess, ContainerContract
 
         $this->buildStack[] = $concrete;
 
-        $instance = $this->call([$concrete, 'newInstance']);
-
-        array_pop($this->buildStack);
+        try {
+            $instance = $this->call([$concrete, 'newInstance']);
+        } finally {
+            array_pop($this->buildStack);
+        }
 
         $this->fireAfterResolvingAttributeCallbacks(
             $reflector->getAttributes(), $instance

@@ -15,7 +15,6 @@ use Illuminate\Database\Concerns\ExplainsQueries;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
-use Illuminate\Database\PostgresConnection;
 use Illuminate\Database\Query\Grammars\Grammar;
 use Illuminate\Database\Query\Processors\Processor;
 use Illuminate\Pagination\Paginator;
@@ -30,6 +29,7 @@ use InvalidArgumentException;
 use LogicException;
 use RuntimeException;
 use SortDirection;
+use Traversable;
 use UnitEnum;
 
 use function Illuminate\Support\enum_value;
@@ -519,7 +519,7 @@ class Builder implements BuilderContract
         $as = $this->getGrammar()->wrap($as ?? $column.'_distance');
 
         return $this->addSelect(
-            new Expression("({$this->getGrammar()->wrap($column)} <=> ?) as {$as}")
+            new Expression("{$this->getGrammar()->compileVectorDistanceExpression($column)} as {$as}")
         );
     }
 
@@ -1254,7 +1254,7 @@ class Builder implements BuilderContract
         }
 
         return $this->whereRaw(
-            "({$this->getGrammar()->wrap($column)} <=> ?) <= ?",
+            "{$this->getGrammar()->compileVectorDistanceExpression($column)} <= ?",
             [
                 json_encode(
                     $vector instanceof Arrayable
@@ -1308,6 +1308,63 @@ class Builder implements BuilderContract
     public function orWhereRaw($sql, $bindings = [])
     {
         return $this->whereRaw($sql, $bindings, 'or');
+    }
+
+    /**
+     * Add a "where binary" clause to the query.
+     *
+     * @param  \Illuminate\Contracts\Database\Query\Expression|string  $column
+     * @param  string  $value
+     * @param  string  $boolean
+     * @param  bool  $not
+     * @return $this
+     */
+    public function whereBinary($column, $value, $boolean = 'and', $not = false)
+    {
+        $type = 'Binary';
+
+        $this->wheres[] = compact('type', 'column', 'value', 'boolean', 'not');
+
+        $this->addBinding($value);
+
+        return $this;
+    }
+
+    /**
+     * Add an "or where binary" clause to the query.
+     *
+     * @param  \Illuminate\Contracts\Database\Query\Expression|string  $column
+     * @param  string  $value
+     * @return $this
+     */
+    public function orWhereBinary($column, $value)
+    {
+        return $this->whereBinary($column, $value, 'or');
+    }
+
+    /**
+     * Add a "where not binary" clause to the query.
+     *
+     * @param  \Illuminate\Contracts\Database\Query\Expression|string  $column
+     * @param  string  $value
+     * @param  string  $boolean
+     * @return $this
+     */
+    public function whereNotBinary($column, $value, $boolean = 'and')
+    {
+        return $this->whereBinary($column, $value, $boolean, true);
+    }
+
+    /**
+     * Add an "or where not binary" clause to the query.
+     *
+     * @param  \Illuminate\Contracts\Database\Query\Expression|string  $column
+     * @param  string  $value
+     * @return $this
+     */
+    public function orWhereNotBinary($column, $value)
+    {
+        return $this->whereNotBinary($column, $value, 'or');
     }
 
     /**
@@ -1620,6 +1677,8 @@ class Builder implements BuilderContract
 
         if ($values instanceof DatePeriod) {
             $values = $this->resolveDatePeriodBounds($values);
+        } elseif ($values instanceof Traversable) {
+            $values = iterator_to_array($values, false);
         }
 
         $this->wheres[] = ['type' => $type, 'column' => $column, 'values' => $values, 'boolean' => $boolean, 'not' => $not];
@@ -1736,7 +1795,9 @@ class Builder implements BuilderContract
 
         $this->wheres[] = ['type' => $type, 'value' => $value, 'columns' => $columns, 'boolean' => $boolean, 'not' => $not];
 
-        $this->addBinding($value, 'where');
+        if (! $value instanceof ExpressionContract) {
+            $this->addBinding($value, 'where');
+        }
 
         return $this;
     }
@@ -2224,6 +2285,10 @@ class Builder implements BuilderContract
     {
         if (count($columns) !== count($values)) {
             throw new InvalidArgumentException('The number of columns must match the number of values');
+        }
+
+        if ($this->invalidOperator($operator)) {
+            throw new InvalidArgumentException('Invalid operator passed to whereRowValues method.');
         }
 
         $type = 'RowValues';
@@ -2865,6 +2930,8 @@ class Builder implements BuilderContract
 
         if ($values instanceof DatePeriod) {
             $values = $this->resolveDatePeriodBounds($values);
+        } elseif ($values instanceof Traversable) {
+            $values = iterator_to_array($values, false);
         }
 
         $this->havings[] = ['type' => $type, 'column' => $column, 'values' => $values, 'boolean' => $boolean, 'not' => $not];
@@ -3061,7 +3128,7 @@ class Builder implements BuilderContract
         );
 
         $this->{$this->unions ? 'unionOrders' : 'orders'}[] = [
-            'column' => new Expression("({$this->getGrammar()->wrap($column)} <=> ?)"),
+            'column' => new Expression($this->getGrammar()->compileVectorDistanceExpression($column)),
             'direction' => 'asc',
         ];
 
@@ -4775,8 +4842,8 @@ class Builder implements BuilderContract
      */
     protected function ensureConnectionSupportsVectors()
     {
-        if (! $this->connection instanceof PostgresConnection) {
-            throw new RuntimeException('Vector distance queries are only supported by Postgres.');
+        if (! $this->getGrammar()->supportsVectorDistance()) {
+            throw new RuntimeException('Vector distance queries are only supported by Postgres and MariaDB.');
         }
     }
 

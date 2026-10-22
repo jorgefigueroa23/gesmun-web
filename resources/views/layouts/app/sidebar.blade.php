@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="{{ str_replace('_', '-', app()->getLocale()) }}" class="dark">
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
     <head>
         @include('partials.head')
     </head>
@@ -29,11 +29,32 @@
                     </flux:sidebar.item>
 
                     <flux:sidebar.item
-                        icon="home-modern"                                                                 
+                        icon="home-modern"
+                        :href="route('declaraciones.index')"
+                        :current="request()->routeIs('declaraciones.index')"
                         wire:navigate
                     >
                         {{ __('Declaraciones Juradas') }}
                     </flux:sidebar.item>
+
+                    <flux:sidebar.item
+                        icon="computer-desktop"
+                        :href="route('sesiones.index')"
+                        :current="request()->routeIs('sesiones.index')"
+                        wire:navigate
+                    >
+                        {{ __('Control de Sesiones') }}
+                    </flux:sidebar.item>
+
+                    <flux:sidebar.item
+                        icon="document-chart-bar"
+                        :href="route('reportes.index')"
+                        :current="request()->routeIs('reportes.index')"
+                        wire:navigate
+                    >
+                        {{ __('Reportes') }}
+                    </flux:sidebar.item>
+
 
                     {{-- <flux:navlist.item
                         icon="users"
@@ -49,6 +70,15 @@
             <flux:spacer />
 
             <flux:sidebar.nav>
+                {{-- Alternar modo claro / oscuro --}}
+                <flux:sidebar.item x-data x-show="$flux.dark" x-on:click.prevent="$flux.dark = false" icon="sun" href="#">
+                    {{ __('Modo claro') }}
+                </flux:sidebar.item>
+
+                <flux:sidebar.item x-data x-show="! $flux.dark" x-on:click.prevent="$flux.dark = true" icon="moon" href="#">
+                    {{ __('Modo oscuro') }}
+                </flux:sidebar.item>
+
                 <flux:sidebar.item icon="folder-git-2" href="https://github.com/laravel/livewire-starter-kit" target="_blank">
                     {{ __('Repository') }}
                 </flux:sidebar.item>
@@ -66,6 +96,8 @@
             <flux:sidebar.toggle class="lg:hidden" icon="bars-2" inset="left" />
 
             <flux:spacer />
+
+            <flux:button x-data x-on:click="$flux.dark = ! $flux.dark" icon="moon" variant="subtle" aria-label="{{ __('Cambiar modo claro/oscuro') }}" />
 
             <flux:dropdown position="top" align="end">
                 <flux:profile
