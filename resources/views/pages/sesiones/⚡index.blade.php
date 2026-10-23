@@ -73,11 +73,9 @@ new class extends Component
                 [$codigoUsuario]
             );
 
-            $this->mensaje = "Sesiones cerradas: {$cerradas}";
-            $this->tipoMensaje = 'success';
+            $this->dispatch('swal', icon: 'success', title: "Sesiones cerradas: {$cerradas}");
         } catch (\Throwable $e) {
-            $this->mensaje = 'Error: ' . $e->getMessage();
-            $this->tipoMensaje = 'danger';
+            $this->dispatch('swal', icon: 'error', title: 'No se pudo desconectar', text: $e->getMessage());
         }
     }
 };
@@ -143,8 +141,14 @@ new class extends Component
                                 size="xs"
                                 title="Desconectar"
                                 variant="danger"
-                                wire:click="desconectar({{ $s->USUARI_N_CODIGO }})"
-                                wire:confirm="¿Cerrar las sesiones abiertas del usuario {{ $s->USUARI_N_CODIGO }}?"
+                                x-data
+                                x-on:click="confirmarSwal({{ Js::from([
+                                    'title' => '¿Desconectar al usuario ' . $s->USUARI_N_CODIGO . '?',
+                                    'text' => 'Se cerrarán todas sus sesiones abiertas.',
+                                    'icon' => 'warning',
+                                    'confirmText' => 'Sí, desconectar',
+                                    'confirmColor' => '#dc2626',
+                                ]) }}).then(ok => ok && $wire.desconectar({{ $s->USUARI_N_CODIGO }}))"
                             >
                                 <span class="hidden lg:inline">Desconectar</span>
                             </flux:button>

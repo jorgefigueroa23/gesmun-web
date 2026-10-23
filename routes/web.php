@@ -1,8 +1,10 @@
 <?php
 
+use App\Http\Controllers\ReporteDjController;
 use Illuminate\Support\Facades\Route;
 
-Route::view('/', 'welcome')->name('home');
+// Siempre inicia en el login (si ya hay sesión, Fortify lo envía al inicio)
+Route::redirect('/', '/login')->name('home');
 
 // Versión anterior:
 // Route::livewire('/usuarios', 'pages::usuarios.index')
@@ -17,6 +19,9 @@ Route::middleware(['auth'])->group(function () {
 
     Route::livewire('/sesiones', 'pages::sesiones.index')
         ->name('sesiones.index');
+
+    Route::get('/reportes/exportar/{formato}', [ReporteDjController::class, 'exportar'])
+        ->name('reportes.exportar');
 
     Route::livewire('/reportes', 'pages::reportes.index')
         ->name('reportes.index');

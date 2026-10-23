@@ -1,32 +1,29 @@
 <?php
 
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Livewire\Component;
+use Livewire\WithPagination;
 
 new class extends Component
 {
+    use WithPagination;
+
     /*
     |--------------------------------------------------------------------------
     | Control de Declaraciones Juradas
     |--------------------------------------------------------------------------
     |
-    | Lógica tomada de example-app (TestController::pendientesDj /
-    | responderDj / reporteDj).
+    | Una sola lista: las solicitudes pendientes (con botones para autorizar o
+    | rechazar) y las que respondió el usuario en sesión.
+    |
+    | Estados: 0 pendiente, 1 autorizada, 2 rechazada.
     |
     */
 
-    public string $mensaje = '';
+    public string $buscar = '';
 
-    public string $tipoMensaje = 'success';
-
-    // Filtros del reporte
-    public string $desde = '';
-
-    public string $hasta = '';
-
-    public string $estado = '';
-
-    public bool $verReporte = false;
+    public int $porPagina = 20;
 
 
     // Tiempo real: Reverb avisa cuando cambian los datos y se vuelve a consultar
@@ -42,59 +39,63 @@ new class extends Component
         ];
     }
 
+    public function updatedBuscar()
+    {
+        $this->resetPage();
+    }
+
 
     public function with()
     {
-        $pendientes = [];
-        $reporte = [];
+        // Pendientes de cualquiera + las respondidas por el usuario en sesión
+        $where = ['(AUTDJ_N_ESTADO = 0 OR (AUTDJ_N_ESTADO IN (1, 2) AND USUARI_N_CODAUT = ?))'];
+        $params = [auth()->user()->USUARI_N_CODIGO];
+
+        $buscar = trim($this->buscar);
+
+        if ($buscar !== '') {
+            $where[] = '(USUARIO LIKE ? OR USUARIO_NOMBRE LIKE ? OR CAST(CONTRI_N_CONSIS AS VARCHAR(30)) LIKE ?)';
+            array_push($params, "%{$buscar}%", "%{$buscar}%", "%{$buscar}%");
+        }
+
+        $condicion = implode(' AND ', $where);
+        $pagina = $this->getPage();
 
         try {
-            // Bandeja del supervisor: solicitudes pendientes
-            $pendientes = DB::select(
-                'SELECT AUTDJ_N_CODIGO, SESSION_ID, USUARI_N_CODIGO, USUARIO, USUARIO_NOMBRE,
-                        HOSTNAME, IP, WINDOWS_USER, CONTRI_N_CONSIS, AUTDJ_D_SOLICITUD, SEGUNDOS_ESPERA
+            $total = (int) DB::selectOne(
+                "SELECT COUNT(*) AS total FROM dbo.VW_TG_AUTORIZACION_DJ_REPORTE WHERE {$condicion}",
+                $params
+            )->total;
+
+            // Primero las pendientes (más antiguas arriba), luego las respondidas (más recientes arriba)
+            $filas = DB::select(
+                "SELECT AUTDJ_N_CODIGO, USUARIO, USUARIO_NOMBRE, AUTDJ_N_ESTADO, ESTADO_DESC,
+                        HOSTNAME, IP, CONTRI_N_CONSIS, AUTDJ_D_SOLICITUD, AUTDJ_D_RESPUESTA, SEGUNDOS_ESPERA
                  FROM dbo.VW_TG_AUTORIZACION_DJ_REPORTE
-                 WHERE AUTDJ_N_ESTADO = 0
-                 ORDER BY AUTDJ_D_SOLICITUD'
+                 WHERE {$condicion}
+                 ORDER BY CASE WHEN AUTDJ_N_ESTADO = 0 THEN 0 ELSE 1 END,
+                          CASE WHEN AUTDJ_N_ESTADO = 0 THEN AUTDJ_D_SOLICITUD END ASC,
+                          AUTDJ_D_RESPUESTA DESC
+                 OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
+                array_merge($params, [($pagina - 1) * $this->porPagina, $this->porPagina])
             );
 
-            if ($this->verReporte) {
-                $where = [];
-                $params = [];
-
-                if ($this->desde !== '') {
-                    $where[] = 'AUTDJ_D_SOLICITUD >= ?';
-                    $params[] = $this->desde;
-                }
-
-                if ($this->hasta !== '') {
-                    $where[] = 'AUTDJ_D_SOLICITUD < DATEADD(DAY, 1, CAST(? AS DATE))';
-                    $params[] = $this->hasta;
-                }
-
-                if (in_array($this->estado, ['0', '1', '2'], true)) {
-                    $where[] = 'AUTDJ_N_ESTADO = ?';
-                    $params[] = $this->estado;
-                }
-
-                $reporte = DB::select(
-                    'SELECT TOP (500) AUTDJ_N_CODIGO, USUARIO, USUARIO_NOMBRE, AUTDJ_T_ACCION, ESTADO_DESC,
-                            AUTDJ_D_SOLICITUD, AUTDJ_D_RESPUESTA, SEGUNDOS_ESPERA, SUPERVISOR,
-                            CONTRI_N_CONSIS, HOSTNAME, IP
-                     FROM dbo.VW_TG_AUTORIZACION_DJ_REPORTE'
-                    . ($where ? ' WHERE ' . implode(' AND ', $where) : '')
-                    . ' ORDER BY AUTDJ_D_SOLICITUD DESC',
-                    $params
-                );
-            }
+            $error = null;
         } catch (\Throwable $e) {
-            $this->mensaje = 'Error: ' . $e->getMessage();
-            $this->tipoMensaje = 'danger';
+            $total = 0;
+            $filas = [];
+            $error = $e->getMessage();
         }
 
         return [
-            'pendientes' => $pendientes,
-            'reporte' => $reporte,
+            'error' => $error,
+            'declaraciones' => new LengthAwarePaginator(
+                $filas,
+                $total,
+                $this->porPagina,
+                $pagina,
+                ['path' => request()->url()]
+            ),
         ];
     }
 
@@ -128,116 +129,153 @@ new class extends Component
                 throw new \RuntimeException('La solicitud ya fue respondida o no existe');
             }
 
-            $this->mensaje = 'Solicitud #' . $codigo . ' ' . ($accion === 'autorizar' ? 'AUTORIZADA' : 'RECHAZADA');
-            $this->tipoMensaje = 'success';
+            $this->dispatch(
+                'swal',
+                icon: 'success',
+                title: 'Solicitud #' . $codigo . ($accion === 'autorizar' ? ' autorizada' : ' rechazada'),
+            );
         } catch (\Throwable $e) {
-            $this->mensaje = 'Error: ' . $e->getMessage();
-            $this->tipoMensaje = 'danger';
+            $this->dispatch('swal', icon: 'error', title: 'No se pudo completar la acción', text: $e->getMessage());
         }
-    }
-
-
-    public function consultarReporte()
-    {
-        $this->validate([
-            'desde' => 'nullable|date',
-            'hasta' => 'nullable|date',
-            'estado' => 'nullable|in:0,1,2',
-        ]);
-
-        $this->verReporte = true;
     }
 };
 ?>
 
 <div
-    class="space-y-8 p-6"
+    class="p-6"
     @if (config('panel.actualizacion') === 'polling') wire:poll.{{ config('panel.poll_segundos') }}s @endif
 >
 
-    <div class="flex items-end justify-between gap-4">
+    {{-- =========================================================
+         ENCABEZADO
+    ========================================================== --}}
+
+    <div class="mb-6 flex items-end justify-between gap-4">
 
         <div>
             <flux:heading size="xl">Declaraciones Juradas</flux:heading>
 
-            <flux:text>Control de autorizaciones de declaraciones juradas</flux:text>
+            <flux:text>Solicitudes pendientes y las que autorizaste o rechazaste</flux:text>
         </div>
 
-        <flux:button wire:click="$refresh" icon="arrow-path">
-            Recargar
-        </flux:button>
+        {{-- Buscador --}}
+
+        <div class="w-72">
+            <flux:input
+                wire:model.live.debounce.300ms="buscar"
+                placeholder="Buscar usuario o contribuyente..."
+                icon="magnifying-glass"
+                clearable
+            />
+        </div>
 
     </div>
 
-    @if ($mensaje)
-        <flux:callout
-            :variant="$tipoMensaje"
-            :text="$mensaje"
-        />
+    @if ($error)
+        <flux:callout variant="danger" :text="'Error: ' . $error" class="mb-4" />
     @endif
 
 
     {{-- =========================================================
-         AUTORIZACIONES PENDIENTES
+         TABLA
     ========================================================== --}}
 
-    <section>
+    <div class="relative">
 
-        <flux:heading size="lg" class="mb-3">Autorizaciones pendientes</flux:heading>
+        <div
+            wire:loading
+            wire:target="buscar, previousPage, nextPage, gotoPage, responder"
+            class="absolute inset-0 z-10 flex items-center justify-center bg-white/60 dark:bg-zinc-900/60"
+        >
+            <div class="flex items-center gap-2 rounded-lg bg-white px-4 py-3 shadow dark:bg-zinc-800">
+                <flux:icon name="arrow-path" class="size-5 animate-spin" />
+                <span class="text-sm">Cargando...</span>
+            </div>
+        </div>
 
-        <div class="overflow-auto rounded-lg border border-zinc-200 dark:border-zinc-700">
+        <div class="overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-700">
 
             <table class="w-full text-sm">
 
-                <thead class="bg-zinc-100 text-left dark:bg-zinc-800">
+                <thead class="bg-zinc-50 text-left dark:bg-zinc-800">
                     <tr>
-                        <th class="px-3 py-2">N°</th>
-                        <th class="px-3 py-2">Usuario</th>
-                        <th class="px-3 py-2">Nombre</th>
-                        <th class="px-3 py-2">Equipo</th>
-                        <th class="px-3 py-2">IP</th>
-                        <th class="px-3 py-2">Contribuyente</th>
-                        <th class="px-3 py-2">Solicitud</th>
-                        <th class="px-3 py-2">Espera (seg)</th>
-                        <th class="px-3 py-2"></th>
+                        <th class="px-4 py-3">N°</th>
+                        <th class="px-4 py-3">Usuario</th>
+                        <th class="px-4 py-3">Nombre</th>
+                        <th class="px-4 py-3">Equipo / IP</th>
+                        <th class="px-4 py-3">Contribuyente</th>
+                        <th class="px-4 py-3">Solicitud</th>
+                        <th class="px-4 py-3">Respuesta</th>
+                        <th class="px-4 py-3">Estado</th>
+                        <th class="px-4 py-3">Acciones</th>
                     </tr>
                 </thead>
 
                 <tbody>
-                    @forelse ($pendientes as $p)
-                        <tr class="border-t border-zinc-200 dark:border-zinc-700" wire:key="dj-{{ $p->AUTDJ_N_CODIGO }}">
-                            <td class="px-3 py-2">{{ $p->AUTDJ_N_CODIGO }}</td>
-                            <td class="px-3 py-2">{{ $p->USUARIO }}</td>
-                            <td class="px-3 py-2">{{ $p->USUARIO_NOMBRE }}</td>
-                            <td class="px-3 py-2">{{ $p->HOSTNAME }}</td>
-                            <td class="px-3 py-2">{{ $p->IP }}</td>
-                            <td class="px-3 py-2">{{ $p->CONTRI_N_CONSIS }}</td>
-                            <td class="px-3 py-2 whitespace-nowrap">{{ $p->AUTDJ_D_SOLICITUD }}</td>
-                            <td class="px-3 py-2">{{ $p->SEGUNDOS_ESPERA }}</td>
-                            <td class="flex justify-end gap-2 px-3 py-2">
-                                <flux:button
-                                    size="sm"
-                                    variant="primary"
-                                    wire:click="responder({{ $p->AUTDJ_N_CODIGO }}, 'autorizar')"
-                                    wire:confirm="¿Autorizar la solicitud #{{ $p->AUTDJ_N_CODIGO }} de {{ $p->USUARIO }}?"
-                                >
-                                    Autorizar
-                                </flux:button>
+                    @forelse ($declaraciones as $d)
+                        <tr class="border-t border-zinc-200 dark:border-zinc-700" wire:key="dj-{{ $d->AUTDJ_N_CODIGO }}">
+                            <td class="px-4 py-3">{{ $d->AUTDJ_N_CODIGO }}</td>
+                            <td class="px-4 py-3">{{ $d->USUARIO }}</td>
+                            <td class="px-4 py-3">{{ $d->USUARIO_NOMBRE }}</td>
+                            <td class="px-4 py-3">{{ $d->HOSTNAME }}<br><span class="text-zinc-500">{{ $d->IP }}</span></td>
+                            <td class="px-4 py-3">{{ $d->CONTRI_N_CONSIS }}</td>
+                            <td class="px-4 py-3 whitespace-nowrap">{{ $d->AUTDJ_D_SOLICITUD }}</td>
+                            <td class="px-4 py-3 whitespace-nowrap">{{ $d->AUTDJ_D_RESPUESTA }}</td>
 
-                                <flux:button
-                                    size="sm"
-                                    variant="danger"
-                                    wire:click="responder({{ $p->AUTDJ_N_CODIGO }}, 'rechazar')"
-                                    wire:confirm="¿Rechazar la solicitud #{{ $p->AUTDJ_N_CODIGO }} de {{ $p->USUARIO }}?"
-                                >
-                                    Rechazar
-                                </flux:button>
+                            <td class="px-4 py-3">
+                                @if ($d->AUTDJ_N_ESTADO == 0)
+                                    <flux:badge size="sm" color="amber">Pendiente</flux:badge>
+                                @elseif ($d->AUTDJ_N_ESTADO == 1)
+                                    <flux:badge size="sm" color="green">Autorizada</flux:badge>
+                                @else
+                                    <flux:badge size="sm" color="red">Rechazada</flux:badge>
+                                @endif
+                            </td>
+
+                            <td class="px-4 py-3">
+                                @if ($d->AUTDJ_N_ESTADO == 0)
+                                    <div class="flex gap-2">
+                                        <flux:button
+                                            size="sm"
+                                            variant="primary"
+                                            x-data
+                                            x-on:click="confirmarSwal({{ Js::from([
+                                                'title' => '¿Autorizar la solicitud #' . $d->AUTDJ_N_CODIGO . '?',
+                                                'text' => 'Se permitirá a ' . $d->USUARIO . ' (' . $d->USUARIO_NOMBRE . ').',
+                                                'icon' => 'question',
+                                                'confirmText' => 'Sí, autorizar',
+                                                'confirmColor' => '#16a34a',
+                                            ]) }}).then(ok => ok && $wire.responder({{ $d->AUTDJ_N_CODIGO }}, 'autorizar'))"
+                                        >
+                                            Autorizar
+                                        </flux:button>
+
+                                        <flux:button
+                                            size="sm"
+                                            variant="danger"
+                                            x-data
+                                            x-on:click="confirmarSwal({{ Js::from([
+                                                'title' => '¿Rechazar la solicitud #' . $d->AUTDJ_N_CODIGO . '?',
+                                                'text' => 'Se denegará a ' . $d->USUARIO . ' (' . $d->USUARIO_NOMBRE . ').',
+                                                'icon' => 'warning',
+                                                'confirmText' => 'Sí, rechazar',
+                                                'confirmColor' => '#dc2626',
+                                            ]) }}).then(ok => ok && $wire.responder({{ $d->AUTDJ_N_CODIGO }}, 'rechazar'))"
+                                        >
+                                            Rechazar
+                                        </flux:button>
+                                    </div>
+                                @else
+                                    <flux:button size="sm" variant="ghost" disabled>
+                                        Respondida
+                                    </flux:button>
+                                @endif
                             </td>
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="9" class="px-3 py-6 text-center text-zinc-500">
-                                Sin autorizaciones pendientes
+                            <td colspan="9" class="px-4 py-6 text-center">
+                                No se encontraron declaraciones.
                             </td>
                         </tr>
                     @endforelse
@@ -247,92 +285,15 @@ new class extends Component
 
         </div>
 
-    </section>
+    </div>
 
 
     {{-- =========================================================
-         REPORTE
+         PAGINACIÓN
     ========================================================== --}}
 
-   {{--  <section>
-
-        <flux:heading size="lg" class="mb-3">Reporte de autorizaciones</flux:heading>
-
-        <div class="mb-3 flex flex-wrap items-end gap-3">
-
-            <flux:input type="date" wire:model="desde" label="Desde" />
-
-            <flux:input type="date" wire:model="hasta" label="Hasta" />
-
-            <flux:select wire:model="estado" label="Estado" class="w-44">
-                <flux:select.option value="">Todos</flux:select.option>
-                <flux:select.option value="0">Pendientes</flux:select.option>
-                <flux:select.option value="1">Autorizadas</flux:select.option>
-                <flux:select.option value="2">Rechazadas</flux:select.option>
-            </flux:select>
-
-            <flux:button wire:click="consultarReporte" variant="primary" icon="magnifying-glass">
-                Consultar
-            </flux:button>
-
-        </div>
-
-        @if ($verReporte)
-
-            <flux:text class="mb-2">{{ count($reporte) }} registro(s)</flux:text>
-
-            <div class="max-h-[60vh] overflow-auto rounded-lg border border-zinc-200 dark:border-zinc-700">
-
-                <table class="w-full text-sm">
-
-                    <thead class="sticky top-0 bg-zinc-100 text-left dark:bg-zinc-800">
-                        <tr>
-                            <th class="px-3 py-2">N°</th>
-                            <th class="px-3 py-2">Usuario</th>
-                            <th class="px-3 py-2">Nombre</th>
-                            <th class="px-3 py-2">Acción</th>
-                            <th class="px-3 py-2">Estado</th>
-                            <th class="px-3 py-2">Solicitud</th>
-                            <th class="px-3 py-2">Respuesta</th>
-                            <th class="px-3 py-2">Espera (seg)</th>
-                            <th class="px-3 py-2">Supervisor</th>
-                            <th class="px-3 py-2">Contribuyente</th>
-                            <th class="px-3 py-2">Equipo</th>
-                            <th class="px-3 py-2">IP</th>
-                        </tr>
-                    </thead>
-
-                    <tbody>
-                        @forelse ($reporte as $r)
-                            <tr class="border-t border-zinc-200 dark:border-zinc-700" wire:key="rep-{{ $r->AUTDJ_N_CODIGO }}">
-                                <td class="px-3 py-2">{{ $r->AUTDJ_N_CODIGO }}</td>
-                                <td class="px-3 py-2">{{ $r->USUARIO }}</td>
-                                <td class="px-3 py-2">{{ $r->USUARIO_NOMBRE }}</td>
-                                <td class="px-3 py-2">{{ $r->AUTDJ_T_ACCION }}</td>
-                                <td class="px-3 py-2">{{ $r->ESTADO_DESC }}</td>
-                                <td class="px-3 py-2 whitespace-nowrap">{{ $r->AUTDJ_D_SOLICITUD }}</td>
-                                <td class="px-3 py-2 whitespace-nowrap">{{ $r->AUTDJ_D_RESPUESTA }}</td>
-                                <td class="px-3 py-2">{{ $r->SEGUNDOS_ESPERA }}</td>
-                                <td class="px-3 py-2">{{ $r->SUPERVISOR }}</td>
-                                <td class="px-3 py-2">{{ $r->CONTRI_N_CONSIS }}</td>
-                                <td class="px-3 py-2">{{ $r->HOSTNAME }}</td>
-                                <td class="px-3 py-2">{{ $r->IP }}</td>
-                            </tr>
-                        @empty
-                            <tr>
-                                <td colspan="12" class="px-3 py-6 text-center text-zinc-500">
-                                    Sin registros
-                                </td>
-                            </tr>
-                        @endforelse
-                    </tbody>
-
-                </table>
-
-            </div>
-
-        @endif
-
-    </section> --}}
+    <div class="mt-6">
+        {{ $declaraciones->links() }}
+    </div>
 
 </div>

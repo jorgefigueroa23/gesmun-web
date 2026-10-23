@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\ReporteDj;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Livewire\Component;
@@ -11,9 +12,12 @@ new class extends Component
 
     /*
     |--------------------------------------------------------------------------
-    | Reporte de Declaraciones Juradas (0 pendiente, 1 autorizada, 2 rechazada, 3 cancelada)
+    | Reporte de Declaraciones Juradas (0 pendiente, 1 autorizada, 2 rechazada, 3 cancelada, 4 registrada)
     |--------------------------------------------------------------------------
     */
+
+    // Período: hoy (por defecto) | ayer | mes | personalizado
+    public string $periodo = 'hoy';
 
     public string $desde = '';
 
@@ -37,56 +41,36 @@ new class extends Component
 
     public function limpiar()
     {
-        $this->reset(['desde', 'hasta', 'usuario', 'supervisor', 'contribuyente', 'estado']);
+        $this->reset(['periodo', 'desde', 'hasta', 'usuario', 'supervisor', 'contribuyente', 'estado']);
 
         $this->resetPage();
+    }
+
+    // Filtros activos: los usa el reporte en pantalla y los enlaces de exportación
+    public function filtros(): array
+    {
+        return [
+            'periodo' => $this->periodo,
+            'desde' => $this->desde,
+            'hasta' => $this->hasta,
+            'estado' => $this->estado,
+            'usuario' => $this->usuario,
+            'supervisor' => $this->supervisor,
+            'contribuyente' => $this->contribuyente,
+        ];
     }
 
     public function with()
     {
         $this->validate([
+            'periodo' => 'in:' . implode(',', ReporteDj::PERIODOS),
             'desde' => 'nullable|date',
-            'hasta' => 'nullable|date',
-            'estado' => 'nullable|in:0,1,2,3',
+            'hasta' => 'nullable|date|after_or_equal:desde',
+            'estado' => 'nullable|in:0,1,2,3,4',
             'porPagina' => 'in:10,20,50,100',
         ]);
 
-        $where = ['1 = 1'];
-        $params = [];
-
-        if ($this->estado !== '') {
-            $where[] = 'AUTDJ_N_ESTADO = ?';
-            $params[] = (int) $this->estado;
-        }
-
-        if ($this->desde !== '') {
-            $where[] = 'AUTDJ_D_SOLICITUD >= ?';
-            $params[] = $this->desde;
-        }
-
-        if ($this->hasta !== '') {
-            $where[] = 'AUTDJ_D_SOLICITUD < DATEADD(DAY, 1, CAST(? AS DATE))';
-            $params[] = $this->hasta;
-        }
-
-        if ($this->usuario !== '') {
-            $where[] = '(USUARIO LIKE ? OR USUARIO_NOMBRE LIKE ?)';
-            $params[] = '%' . $this->usuario . '%';
-            $params[] = '%' . $this->usuario . '%';
-        }
-
-        if ($this->supervisor !== '') {
-            $where[] = '(SUPERVISOR LIKE ? OR SUPERVISOR_NOMBRE LIKE ?)';
-            $params[] = '%' . $this->supervisor . '%';
-            $params[] = '%' . $this->supervisor . '%';
-        }
-
-        if ($this->contribuyente !== '') {
-            $where[] = 'CAST(CONTRI_N_CONSIS AS VARCHAR(30)) LIKE ?';
-            $params[] = '%' . $this->contribuyente . '%';
-        }
-
-        $condicion = implode(' AND ', $where);
+        [$condicion, $params] = ReporteDj::condicion($this->filtros());
 
         $pagina = $this->getPage();
 
@@ -97,9 +81,7 @@ new class extends Component
             )->total;
 
             $filas = DB::select(
-                "SELECT AUTDJ_N_CODIGO, USUARIO, USUARIO_NOMBRE, AUTDJ_T_ACCION, ESTADO_DESC, AUTDJ_N_ESTADO, AUTDJ_D_SOLICITUD,
-                        AUTDJ_D_RESPUESTA, SEGUNDOS_ESPERA, SUPERVISOR, SUPERVISOR_NOMBRE,
-                        CONTRI_N_CONSIS, HOSTNAME, IP, AUTDJ_T_OBSERV
+                'SELECT ' . ReporteDj::COLUMNAS . "
                  FROM dbo.VW_TG_AUTORIZACION_DJ_REPORTE
                  WHERE {$condicion}
                  ORDER BY AUTDJ_D_SOLICITUD DESC
@@ -152,8 +134,18 @@ new class extends Component
                gap: var(--filtro-espacio);
                grid-template-columns: repeat(auto-fill, minmax(var(--filtro-ancho-min), 1fr));"
     >
-        <flux:input type="date" wire:model.live="desde" label="Desde" />
-        <flux:input type="date" wire:model.live="hasta" label="Hasta" />
+        <flux:select wire:model.live="periodo" label="Período">
+            <flux:select.option value="hoy">Hoy</flux:select.option>
+            <flux:select.option value="ayer">Ayer</flux:select.option>
+            <flux:select.option value="mes">Mes</flux:select.option>
+            <flux:select.option value="personalizado">Personalizado</flux:select.option>
+        </flux:select>
+
+        @if ($periodo === 'personalizado')
+            <flux:input type="date" wire:model.live="desde" label="Desde" />
+            <flux:input type="date" wire:model.live="hasta" label="Hasta" />
+        @endif
+
         <flux:input wire:model.live.debounce.400ms="usuario" label="Usuario" placeholder="Código o nombre" icon="magnifying-glass" clearable />
         <flux:input wire:model.live.debounce.400ms="supervisor" label="Supervisor" placeholder="Código o nombre" icon="magnifying-glass" clearable />
         <flux:input wire:model.live.debounce.400ms="contribuyente" label="Contribuyente" placeholder="Código" icon="magnifying-glass" clearable />
@@ -163,6 +155,7 @@ new class extends Component
             <flux:select.option value="1">Autorizadas</flux:select.option>
             <flux:select.option value="2">Rechazadas</flux:select.option>
             <flux:select.option value="3">Canceladas</flux:select.option>
+            <flux:select.option value="4">Registradas</flux:select.option>
         </flux:select>
         <flux:select wire:model.live="porPagina" label="Registros por página">
             <flux:select.option value="10">10</flux:select.option>
@@ -175,7 +168,28 @@ new class extends Component
     <div class="flex items-center justify-between">
         <flux:text>{{ number_format($total) }} DJ</flux:text>
 
-        <flux:button wire:click="limpiar" icon="x-mark" size="sm">Limpiar filtros</flux:button>
+        <div class="flex items-center gap-2">
+            {{-- Las exportaciones usan exactamente los filtros que el encargado tiene aplicados --}}
+            <flux:button
+                as="a"
+                size="sm"
+                icon="document-text"
+                :href="route('reportes.exportar', ['formato' => 'pdf'] + $this->filtros())"
+            >
+                PDF
+            </flux:button>
+
+            <flux:button
+                as="a"
+                size="sm"
+                icon="table-cells"
+                :href="route('reportes.exportar', ['formato' => 'excel'] + $this->filtros())"
+            >
+                Excel
+            </flux:button>
+
+            <flux:button wire:click="limpiar" icon="x-mark" size="sm">Limpiar filtros</flux:button>
+        </div>
     </div>
 
     @if ($error)
@@ -210,7 +224,7 @@ new class extends Component
                     <tr class="border-t border-zinc-200 align-top dark:border-zinc-700" wire:key="rep-{{ $r->AUTDJ_N_CODIGO }}">
                         <td class="px-1 py-1.5 sm:px-2 sm:py-2">{{ $r->AUTDJ_N_CODIGO }}</td>
                         <td class="break-words px-1 py-1.5 sm:px-2 sm:py-2">{{ $r->USUARIO }}<br><span class="text-zinc-500">{{ $r->USUARIO_NOMBRE }}</span></td>
-                        <td class="break-words px-1 py-1.5 sm:px-2 sm:py-2">{{ $r->AUTDJ_T_ACCION }}</td>
+                        <td class="break-words px-1 py-1.5 sm:px-2 sm:py-2">{{ $r->AUTDJ_T_ACCION }}<br><span class="text-zinc-500">{{ $r->AUTDJ_T_ORIGEN }}</span></td>
                         <td class="break-words px-1 py-1.5 sm:px-2 sm:py-2">{{ $r->ESTADO_DESC }}</td>
                         <td class="break-words px-1 py-1.5 sm:px-2 sm:py-2">{{ $r->AUTDJ_D_SOLICITUD }}</td>
                         <td class="break-words px-1 py-1.5 sm:px-2 sm:py-2">{{ $r->AUTDJ_D_RESPUESTA }}</td>

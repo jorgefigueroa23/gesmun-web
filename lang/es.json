@@ -1,0 +1,23 @@
+{
+    "Log in": "Iniciar sesión",
+    "Log in to your account": "Inicia sesión en tu cuenta",
+    "Enter your email and password below to log in": "Ingresa tu correo y contraseña para iniciar sesión",
+    "Email address": "Correo electrónico",
+    "Password": "Contraseña",
+    "Forgot your password?": "¿Olvidaste tu contraseña?",
+    "Remember me": "Recordarme",
+    "Forgot password": "Recuperar contraseña",
+    "Enter your email to receive a password reset link": "Ingresa tu correo para recibir un enlace de recuperación",
+    "Email password reset link": "Enviar enlace de recuperación",
+    "Or, return to": "O vuelve a",
+    "log in": "iniciar sesión",
+    "Dashboard": "Inicio",
+    "Platform": "Plataforma",
+    "Settings": "Configuración",
+    "Log out": "Cerrar sesión",
+    "Repository": "Repositorio",
+    "Documentation": "Documentación",
+    "Search": "Buscar",
+    "These credentials do not match our records.": "Usuario o contraseña incorrectos.",
+    "Too many login attempts. Please try again in :seconds seconds.": "Demasiados intentos. Inténtalo de nuevo en :seconds segundos."
+}
